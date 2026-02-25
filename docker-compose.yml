@@ -1,0 +1,30 @@
+
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+    container_name: scholar_frontend
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./frontend:/app
+      - ./common:/common
+    environment:
+      - BACKEND_URL=http://backend:8000
+    depends_on:
+      - backend
+    restart: always
+
+  backend:
+    build:
+      context: ./backend
+    container_name: scholar_backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - ./common:/common
+    env_file:
+      - .env
+    restart: always
