@@ -236,8 +236,7 @@ if "is_searching" not in st.session_state:
     st.session_state.is_searching = False
 if "is_translating" not in st.session_state:
     st.session_state.is_translating = False
-if "current_backend_mode" not in st.session_state:
-    st.session_state.current_backend_mode = "研究用 (詳細な翻訳と考察)"
+
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "glossary_result" not in st.session_state:
@@ -250,14 +249,7 @@ if "is_dialog_open" not in st.session_state:
 
 @st.dialog("論文詳細・翻訳", width="large")
 def show_translation_dialog(paper):
-    mode_map_reverse = {
-        "研究用 (詳細な翻訳と考察)": "研究用",
-        "レポート用 (要点と構成の整理)": "レポート用",
-        "速読用 (TL;DR・ハイライト)": "速読用"
-    }
-    
-    st.markdown(f"<p style='margin:0; padding:0; font-size: 12px; font-weight:bold; color: #64748B;'>{mode_map_reverse[st.session_state.current_backend_mode]}モード表示</p>", unsafe_allow_html=True)
-    st.divider()
+
     
     col1, col2 = st.columns(2)
     
@@ -281,7 +273,7 @@ def show_translation_dialog(paper):
                         "pdf_url": paper.get("pdf_url") or "",
                         "title": paper.get("title") or "",
                         "snippet": paper.get("snippet") or "",
-                        "mode": st.session_state.current_backend_mode
+                        "mode": "研究用 (詳細な翻訳と考察)"
                     })
                     res.raise_for_status()
                     data = res.json()
@@ -378,37 +370,21 @@ st.markdown('<div class="brand-header"><div class="brand-icon">S</div><h1 class=
 
 search_query = st.text_input("検索", value=st.session_state.get("last_query", ""), placeholder="例: attention is all you need", label_visibility="collapsed")
     
-st.markdown("<p style='font-size: 12px; font-weight: 700; color: #64748B; margin-bottom: 4px; margin-top: 20px;'>翻訳モード</p>", unsafe_allow_html=True)
-    
-mode_map = {
-    "研究用": "研究用 (詳細な翻訳と考察)",
-    "レポート用": "レポート用 (要点と構成の整理)",
-    "速読用": "速読用 (TL;DR・ハイライト)"
-}
-    
-# default to previously selected or 0
-current_mode_name = "研究用"
-for k, v in mode_map.items():
-    if v == st.session_state.current_backend_mode:
-        current_mode_name = k
-        break
-        
-usage_mode = st.radio(
-    "翻訳モード",
-    options=["研究用", "レポート用", "速読用"],
-    index=["研究用", "レポート用", "速読用"].index(current_mode_name),
-    horizontal=True,
-    label_visibility="collapsed"
-)
-    
-st.session_state.current_backend_mode = mode_map[usage_mode]
+
     
 # Filters
-col_filter1, col_filter2, _ = st.columns([2, 5, 3])
-with col_filter1:
+col_time, col_sort, col_custom_time, _ = st.columns([2, 2, 4, 2])
+with col_time:
     time_preset = st.selectbox(
         "期間指定", 
         options=["指定なし", "過去1年間", "過去5年間", "過去10年間", "カスタム期間指定"],
+        index=0
+    )
+
+with col_sort:
+    sort_by = st.selectbox(
+        "並び替え",
+        options=["関連度順 (Relevance)", "最新順 (Newest)", "古い順 (Oldest)"],
         index=0
     )
     
@@ -417,7 +393,7 @@ end_year_val = None
 current_year = date.today().year
 
 if time_preset == "カスタム期間指定":
-    with col_filter2:
+    with col_custom_time:
         st.markdown("<div style='margin-top: 2rem;'></div>", unsafe_allow_html=True)
         custom_years = st.slider(
             "年代を指定",
@@ -441,16 +417,10 @@ elif time_preset == "過去10年間":
     start_year_val = str(current_year - 10)
     end_year_val = str(current_year)
     
-# Sort
+# Sort parsed values
 sort_by_val = "relevance"
-with col_filter1:
-    sort_by = st.selectbox(
-        "並び替え",
-        options=["関連度順 (Relevance)", "最新順 (Newest)", "古い順 (Oldest)"],
-        index=0
-    )
-    if "Newest" in sort_by: sort_by_val = "newest"
-    elif "Oldest" in sort_by: sort_by_val = "oldest"
+if "Newest" in sort_by: sort_by_val = "newest"
+elif "Oldest" in sort_by: sort_by_val = "oldest"
 
 col_search, _ = st.columns([1, 5])
 with col_search:
