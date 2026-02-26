@@ -13,6 +13,8 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+st.write("✅ Frontend Container is Starting...")
+
 # Custom CSS for styling
 st.markdown("""
 <style>

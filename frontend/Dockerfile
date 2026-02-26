@@ -11,4 +11,11 @@ COPY . .
 ENV PORT=8501
 EXPOSE $PORT
 
-CMD ["sh", "-c", "streamlit run app.py --server.port=${PORT:-8501} --server.address=0.0.0.0 --server.enableCORS=false --server.enableXsrfProtection=false"]
+CMD ["streamlit", "run", "app.py", \
+    "--server.port=8501", \
+    "--server.address=0.0.0.0", \
+    "--server.headless=true", \
+    "--browser.gatherUsageStats=false", \
+    "--server.enableCORS=false", \
+    "--server.enableXsrfProtection=false", \
+    "--server.enableWebsocketCompression=false"]
