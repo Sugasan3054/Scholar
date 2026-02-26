@@ -5,6 +5,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-EXPOSE 8501
+# AWS ECR等のクラウド用: コンテナ内にソースコードをすべてコピーする
+COPY . .
 
-CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+ENV PORT=8501
+EXPOSE $PORT
+
+CMD ["sh", "-c", "streamlit run app.py --server.port=${PORT:-8501} --server.address=0.0.0.0 --server.enableCORS=false --server.enableXsrfProtection=false"]

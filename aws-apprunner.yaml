@@ -1,0 +1,33 @@
+version: 1.0
+runtime: python311
+
+# CPUとメモリの設定（App Runnerのサービス作成時にも指定可能）
+# 例: 1 vCPU, 2 GB RAM (デフォルト)
+# instanceConfiguration:
+#   cpu: 1 vCPU
+#   memory: 2 GB
+
+build:
+  commands:
+    build:
+      - cd backend
+      - pip install -r requirements.txt
+run:
+  # App Runner は提供された PORT 環境変数 (デフォルト 8000 など) を利用してアプリにトラフィックをルーティングします
+  command: cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT
+  network:
+    port: 8000
+    env: PORT
+  env:
+    # データベースの接続先URI（AppRunner上で RDS PostgreSQL と連携させる場合はここで上書き、またはコンソールから注入）
+    - name: DATABASE_URL
+      value: "sqlite:///./data/papers.db"
+    
+    # === セキュリティ上の注意 ===
+    # 以下のAPIキー類はGitリポジトリにコミットすべきではありません。
+    # 代わりに AWS App Runner コンソール画面の「環境変数（プレーンテキスト）」や、
+    # 「AWS Secrets Manager（機密データ）」から安全に注入してください。
+    # - name: GEMINI_API_KEY
+    #   value: "your_gemini_api_key_here"
+    # - name: SERPAPI_API_KEY
+    #   value: "your_serpapi_api_key_here"

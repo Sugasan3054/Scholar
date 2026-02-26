@@ -292,7 +292,9 @@ def show_translation_dialog(paper):
                     st.session_state.current_paper_id = data.get("paper_id")
                     st.session_state.chat_history = data.get("chat_history", [])
                 except requests.exceptions.HTTPError as e:
-                    if res.status_code == 500:
+                    if res.status_code == 429:
+                        st.warning("本日の利用上限に達しました。明日またご利用ください。")
+                    elif res.status_code == 500:
                         st.error("Backend Error: Please check if GEMINI_API_KEY is correctly set in .env")
                     else:
                         st.error(f"Translation failed: {res.json().get('detail', 'Unknown error')}")
@@ -463,6 +465,7 @@ def show_translation_dialog(paper):
 head_col1, head_col2 = st.columns([9, 1])
 with head_col1:
     st.markdown('<div class="brand-header"><div class="brand-icon">S</div><h1 class="brand-title">ScholarStream</h1></div>', unsafe_allow_html=True)
+    st.caption(f"🔧 Debug: Connecting to backend at `{BACKEND_URL}`")
 
 with head_col2:
     st.markdown("<div style='margin-top: 16px;'></div>", unsafe_allow_html=True)

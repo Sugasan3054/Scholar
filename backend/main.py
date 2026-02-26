@@ -2,11 +2,11 @@ import os
 import requests
 import fitz  # PyMuPDF
 from typing import Optional, List, Dict
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from serpapi import GoogleSearch
 from google import genai
-from dotenv import load_dotenv
 from services.arxiv_service import fetch_arxiv_papers
 from services.semantic_scholar_service import fetch_semantic_scholar_metadata, determine_badges
 from utils.date_utils import normalize_date
@@ -14,14 +14,20 @@ from utils.prompt_manager import PromptManager
 import asyncio
 import json
 import hashlib
-from database import init_db, get_paper, save_paper, get_all_papers, update_chat_history
-
-load_dotenv()
+from database import init_db, get_paper, save_paper, get_all_papers, update_chat_history, check_rate_limit
+from config import config
 
 app = FastAPI(title="Scholar AI Translator API")
 
-SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# --------- CORS Configuration ---------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+# --------------------------------------
 
 @app.on_event("startup")
 def startup_event():
@@ -57,13 +63,13 @@ def read_root():
 
 @app.post("/search")
 async def search_papers(request: SearchRequest):
-    if not SERPAPI_API_KEY or SERPAPI_API_KEY.startswith("your_"):
+    if not config.SERPAPI_API_KEY or config.SERPAPI_API_KEY.startswith("your_"):
          raise HTTPException(status_code=500, detail="SERPAPI_API_KEY is not configured correctly.")
          
     params = {
       "engine": "google_scholar",
       "q": request.query,
-      "api_key": SERPAPI_API_KEY,
+      "api_key": config.SERPAPI_API_KEY,
       "num": 5  # fetch top 5
     }
 
@@ -161,8 +167,8 @@ async def search_papers(request: SearchRequest):
     }
 
 @app.post("/translate")
-def translate_paper(request: TranslateRequest):
-    if not GEMINI_API_KEY or GEMINI_API_KEY.startswith("your_"):
+def translate_paper(request: TranslateRequest, req: Request):
+    if not config.GEMINI_API_KEY or config.GEMINI_API_KEY.startswith("your_"):
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY is not configured correctly.")
         
     if not request.pdf_url and not request.snippet:
@@ -194,7 +200,13 @@ def translate_paper(request: TranslateRequest):
         except Exception as e:
             print(f"Cache parse error: {e}")
 
-    # 2. Download PDF (Best effort)
+    client_ip = req.client.host if req.client else "unknown_ip"
+    
+    # 2. Rate Limit check before invoking expensive Gemini API
+    if not check_rate_limit(user_id=client_ip, action="translate", limit=5):
+        raise HTTPException(status_code=429, detail="本日の翻訳利用上限(5回)に達しました。明日またご利用ください。")
+
+    # 3. Download PDF (Best effort)
     text = ""
     download_success = False
     
@@ -237,7 +249,7 @@ def translate_paper(request: TranslateRequest):
 
     # 4. Gemini API Call
     try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
+        client = genai.Client(api_key=config.GEMINI_API_KEY)
         response = client.models.generate_content(
             model='gemini-2.5-flash',
             contents=system_instruction + "\n\n---\n" + text,
@@ -259,7 +271,8 @@ def translate_paper(request: TranslateRequest):
                 title_en=data.get('title_en', title_str),
                 published_date=request.published_date or "YYYY/MM/DD",
                 source_url=request.pdf_url or "Unknown",
-                summary_json=translation
+                summary_json=translation,
+                user_id=client_ip
             )
         except Exception as parse_e:
             translation = {"error": "JSON解析エラー", "raw": response.text}
@@ -281,7 +294,7 @@ def translate_paper(request: TranslateRequest):
 
 @app.post("/qa")
 def qa_paper(request: QARequest):
-    if not GEMINI_API_KEY or GEMINI_API_KEY.startswith("your_"):
+    if not config.GEMINI_API_KEY or config.GEMINI_API_KEY.startswith("your_"):
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY is not configured correctly.")
         
     system_instruction = "あなたは論文の内容について答えるAIアシスタントです。以下の「現在参照している論文の要約・文脈」を踏まえてユーザーの質問に日本語で簡潔に答えてください。\n\n"
@@ -300,7 +313,7 @@ def qa_paper(request: QARequest):
     prompt += f"[新しい質問]\nユーザー: {request.question}\nアシスタント:"
     
     try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
+        client = genai.Client(api_key=config.GEMINI_API_KEY)
         response = client.models.generate_content(
             model='gemini-2.5-flash',
             contents=prompt,
@@ -325,8 +338,9 @@ def update_chat(request: QAChatUpdateRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/history")
-def get_history():
-    papers = get_all_papers()
+def get_history(req: Request):
+    client_ip = req.client.host if req.client else "unknown_ip"
+    papers = get_all_papers(user_id=client_ip)
     return {
         "status": "success",
         "history": papers

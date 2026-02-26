@@ -1,5 +1,3 @@
-
-
 services:
   frontend:
     build:
@@ -11,7 +9,7 @@ services:
       - ./frontend:/app
       - ./common:/common
     environment:
-      - BACKEND_URL=http://backend:8000
+      - BACKEND_URL=${BACKEND_URL:-http://backend:8000}
     depends_on:
       - backend
     restart: always
@@ -27,4 +25,7 @@ services:
       - ./common:/common
     env_file:
       - .env
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - SERPAPI_API_KEY=${SERPAPI_API_KEY}
     restart: always
