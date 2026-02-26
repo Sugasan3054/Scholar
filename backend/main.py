@@ -10,8 +10,11 @@ from dotenv import load_dotenv
 from services.arxiv_service import fetch_arxiv_papers
 from services.semantic_scholar_service import fetch_semantic_scholar_metadata, determine_badges
 from utils.date_utils import normalize_date
+from utils.prompt_manager import PromptManager
 import asyncio
 import json
+import hashlib
+from database import init_db, get_paper, save_paper, get_all_papers, update_chat_history
 
 load_dotenv()
 
@@ -19,6 +22,10 @@ app = FastAPI(title="Scholar AI Translator API")
 
 SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+@app.on_event("startup")
+def startup_event():
+    init_db()
 
 class SearchRequest(BaseModel):
     query: str
@@ -31,12 +38,18 @@ class TranslateRequest(BaseModel):
     pdf_url: Optional[str] = None
     title: Optional[str] = None
     snippet: Optional[str] = None
+    published_date: Optional[str] = None
+    source: Optional[str] = None
     mode: str 
 
 class QARequest(BaseModel):
     question: str
     context: str
     history: List[Dict[str, str]] = []
+
+class QAChatUpdateRequest(BaseModel):
+    paper_id: str
+    chat_history: list
 
 @app.get("/")
 def read_root():
@@ -155,7 +168,33 @@ def translate_paper(request: TranslateRequest):
     if not request.pdf_url and not request.snippet:
         raise HTTPException(status_code=400, detail="PDF URL or Snippet is required")
 
-    # 1. Download PDF (Best effort)
+    # 1. Check DB Cache
+    title_str = request.title or "Unknown Title"
+    url_str = request.pdf_url or "No URL provided."
+    paper_id_str = f"{title_str}_{url_str}"
+    paper_id = hashlib.md5(paper_id_str.encode('utf-8')).hexdigest()
+    
+    cached = get_paper(paper_id)
+    if cached:
+        try:
+            translation = json.loads(cached['summary_json'])
+            chat_hist = []
+            if cached.get('chat_history'):
+                chat_hist = json.loads(cached['chat_history'])
+                
+            return {
+                "status": "success",
+                "pdf_url": request.pdf_url,
+                "mode": request.mode,
+                "translation": translation,
+                "glossary": translation.get("glossary", []),
+                "paper_id": paper_id,
+                "chat_history": chat_hist
+            }
+        except Exception as e:
+            print(f"Cache parse error: {e}")
+
+    # 2. Download PDF (Best effort)
     text = ""
     download_success = False
     
@@ -190,38 +229,11 @@ def translate_paper(request: TranslateRequest):
 
 
     # 3. Prompt setup
-    prompts = {
-        "研究用 (詳細な翻訳と考察)": "あなたはシニア研究者です。以下の論文の抜粋を読み、研究目的（背景、提案手法、実験結果、貢献）を詳細に日本語で翻訳・要約し、専門的な視点からの深い考察を加えてください。\n\n",
-        "レポート用 (要点と構成の整理)": "あなたは優秀なアシスタントです。以下の論文の抜粋を読み、学生がレポートにまとめやすいように、①背景と目的、②提案手法、③実験と結果の3項目で見出しをつけて、分かりやすい日本語で要約してください。\n\n",
-        "速読用 (TL;DR・ハイライト)": "忙しい専門家向けに、以下の論文の最も重要なポイント（TL;DR）を3つの箇条書きで日本語で簡潔にまとめてください。\n\n",
+    paper_meta = {
+        "published_date": request.published_date,
+        "source": request.source
     }
-    
-    system_instruction = prompts.get(request.mode, "以下の論文を日本語で要約してください。\n\n")
-    
-    system_instruction += """
-さらに、論文内で使われている「専門用語（キーワード）」を抽出し、それらの簡単な説明文を付与してください。
-用語は分野（物理、数学、情報、電子工学など）ごとに分類してください。
-
-【重要】
-抽出した用語名が日本語ではない場合（英語などの場合）は、必ずその横に「(訳: 〇〇)」という形式で日本語訳を付与してください。
-例: 
-- Attention mechanism (訳: 注意機構)
-- Latent Space (訳: 潜在空間)
-※ 元から日本語の用語の場合は、単に日本語の用語名のみを出力し、「(訳: )」などを付与しないでください（例: "用語名"）。
-
-出力は必ず以下のJSONフォーマットのみで行ってください（Markdownブロック ```json などは含めないでください）：
-{
-  "translation": "<翻訳・要約テキスト（Markdownの改行を含む）>",
-  "glossary": [
-    {
-      "category": "分野名（例：情報）",
-      "terms": [
-        {"term": "用語名 (訳: 日本語訳)", "explanation": "用語の簡潔な説明"}
-      ]
-    }
-  ]
-}
-"""
+    system_instruction = PromptManager.get_prompt(paper_metadata=paper_meta)
 
     # 4. Gemini API Call
     try:
@@ -237,10 +249,20 @@ def translate_paper(request: TranslateRequest):
         try:
             # Parse json from gemini
             data = json.loads(response.text)
-            translation = data.get("translation", "翻訳データが見つかりませんでした。")
+            translation = data
             glossary = data.get("glossary", [])
+            
+            # Save to DB
+            save_paper(
+                paper_id=paper_id,
+                title_jp=data.get('title_jp', title_str),
+                title_en=data.get('title_en', title_str),
+                published_date=request.published_date or "YYYY/MM/DD",
+                source_url=request.pdf_url or "Unknown",
+                summary_json=translation
+            )
         except Exception as parse_e:
-            translation = response.text
+            translation = {"error": "JSON解析エラー", "raw": response.text}
             glossary = []
             
         return {
@@ -248,7 +270,9 @@ def translate_paper(request: TranslateRequest):
             "pdf_url": request.pdf_url,
             "mode": request.mode,
             "translation": translation,
-            "glossary": glossary
+            "glossary": glossary,
+            "paper_id": paper_id,
+            "chat_history": []
         }
     except Exception as e:
         import traceback
@@ -289,3 +313,21 @@ def qa_paper(request: QARequest):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/update_chat")
+def update_chat(request: QAChatUpdateRequest):
+    try:
+        update_chat_history(request.paper_id, request.chat_history)
+        return {"status": "success"}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/history")
+def get_history():
+    papers = get_all_papers()
+    return {
+        "status": "success",
+        "history": papers
+    }

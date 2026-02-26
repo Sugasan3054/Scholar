@@ -3,6 +3,7 @@ import requests
 import os
 from datetime import datetime, timedelta, date
 import os
+import json
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 
@@ -73,6 +74,13 @@ st.markdown("""
         line-height: 1.6;
         font-size: 15px;
     }
+    .translation-output h1 { font-size: 22px; color: #1E293B; border-bottom: 2px solid #E2E8F0; padding-bottom: 8px; margin-top: 16px; font-weight: 700; }
+    .translation-output h2 { font-size: 18px; color: #2563EB; margin-top: 24px; margin-bottom: 12px; font-weight: 600; }
+    .translation-output p { font-size: 15px; color: #334155; line-height: 1.6; margin-bottom: 12px; }
+    .translation-output blockquote { border-left: 4px solid #3B82F6; background-color: #F8FAFC; padding: 12px 16px; margin: 0 0 16px 0; color: #475569; font-style: normal; }
+    .translation-output blockquote p { margin-bottom: 0; font-weight: 500; }
+    .translation-output ul { margin-bottom: 16px; padding-left: 24px; }
+    .translation-output li { margin-bottom: 8px; font-size: 15px; color: #334155; line-height: 1.6; }
     
     /* Badges */
     .badge {
@@ -241,13 +249,13 @@ if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "glossary_result" not in st.session_state:
     st.session_state.glossary_result = []
-if "is_dialog_open" not in st.session_state:
-    st.session_state.is_dialog_open = False
+if "current_paper_id" not in st.session_state:
+    st.session_state.current_paper_id = None
 
-
+# -----------------
 # App Logic
 
-@st.dialog("論文詳細・翻訳", width="large")
+@st.dialog("📖 閲覧中", width="large")
 def show_translation_dialog(paper):
 
     
@@ -273,12 +281,16 @@ def show_translation_dialog(paper):
                         "pdf_url": paper.get("pdf_url") or "",
                         "title": paper.get("title") or "",
                         "snippet": paper.get("snippet") or "",
+                        "published_date": paper.get("published_date") or "",
+                        "source": paper.get("source") or "",
                         "mode": "研究用 (詳細な翻訳と考察)"
                     })
                     res.raise_for_status()
                     data = res.json()
                     st.session_state.translation_result = data.get("translation")
                     st.session_state.glossary_result = data.get("glossary", [])
+                    st.session_state.current_paper_id = data.get("paper_id")
+                    st.session_state.chat_history = data.get("chat_history", [])
                 except requests.exceptions.HTTPError as e:
                     if res.status_code == 500:
                         st.error("Backend Error: Please check if GEMINI_API_KEY is correctly set in .env")
@@ -289,34 +301,101 @@ def show_translation_dialog(paper):
             st.session_state.is_translating = False
 
         if st.session_state.translation_result:
-            st.markdown(f"""
-            <div class='translation-output' style='height: 60vh; overflow-y: auto;'>
-                {st.session_state.translation_result.replace(chr(10), '<br/>')}
-            </div>
-            """, unsafe_allow_html=True)
+            res = st.session_state.translation_result
+            if isinstance(res, dict) and "tldr" in res:
+                title_jp = res.get('title_jp', '無題')
+                title_en = res.get('title_en', '')
+                date_str = paper.get('published_date') or "YYYY/MM/DD"
+                source_str = paper.get('source') or "Unknown"
+                
+                # Title
+                st.markdown(f"### 📄 {title_jp}")
+                st.caption(f"Original: {title_en} | {date_str} | {source_str}")
+                
+                # TL;DR (強調表示)
+                with st.container():
+                    tldr_value = res.get('tldr', '')
+                    if isinstance(tldr_value, list):
+                        tldr_text = "<br/><br/>".join([str(item) for item in tldr_value])
+                    else:
+                        tldr_text = str(tldr_value).replace('\n', '<br/><br/>')
+                        
+                    st.markdown(f"""
+                    <div style='background-color: #F8FAFC; border-left: 6px solid #3B82F6; padding: 20px 24px; border-radius: 8px; margin-bottom: 24px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);'>
+                        <h3 style='margin-top: 0; color: #1E293B; font-size: 1.25em; margin-bottom: 16px; border-bottom: none;'>📝 3行でわかる今回の研究</h3>
+                        <div style='display: flex; gap: 12px; align-items: flex-start;'>
+                            <div style='font-size: 1.4em; margin-top: 2px;'>💡</div>
+                            <div style='font-size: 1.1em; line-height: 1.8; font-weight: 600; color: #334155;'>
+                                {tldr_text}
+                            </div>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                st.divider()
+                
+                # Sections
+                st.markdown("#### 🔍 研究の背景と目的")
+                st.write(res.get('background', ''))
+                st.divider()
+                
+                st.markdown("#### ⚙️ 提案手法（メソッド）")
+                st.write(res.get('method', ''))
+                st.divider()
+                
+                st.markdown("#### 📊 実験と結果")
+                st.write(res.get('result', ''))
+                st.divider()
+                
+                st.markdown("#### 💡 考察・今後の課題")
+                st.write(res.get('discussion', ''))
+                st.divider()
+                
+                # Markdown Copy
+                copy_tldr = tldr_value if isinstance(tldr_value, list) else [res.get('tldr', '')]
+                copy_tldr_str = "\n".join([str(item) for item in copy_tldr])
+                
+                copy_text = f"# {title_jp}\n*Original Title: {title_en}*\n\n## 📝 3行でわかる今回の研究（TL;DR）\n{copy_tldr_str}\n\n## 🔍 研究の背景と目的\n{res.get('background')}\n\n## ⚙️ 提案手法（メソッド）\n{res.get('method')}\n\n## 📊 実験と結果\n{res.get('result')}\n\n## 💡 考察・今後の課題\n{res.get('discussion')}"
+                with st.expander("📝 翻訳結果をMarkdownとしてコピーする"):
+                     st.code(copy_text, language="markdown")
+                     
+                # Terms
+                st.session_state.glossary_result = res.get('glossary', [])
+            else:
+                # Fallback
+                text_content = res if isinstance(res, str) else res.get("raw", str(res))
+                st.markdown(f"""
+                <div class='translation-output' style='height: 60vh; overflow-y: auto;'>
+                    {text_content.replace(chr(10), '<br/>')}
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.divider()
+                with st.expander("📝 翻訳結果をMarkdownとしてコピーする"):
+                     st.code(text_content, language="markdown")
 
     # -----------------
     # Glossary Section
     # -----------------
     if st.session_state.translation_result and st.session_state.glossary_result:
         st.markdown("<br><br>", unsafe_allow_html=True)
-        st.markdown("<p class='section-header-jp'>論文に使われている専門用語</p>", unsafe_allow_html=True)
-        st.markdown("<p style='font-size: 13px; color: #64748B; margin-bottom: 16px;'>※ 用語にカーソルを合わせると説明が表示されます。</p>", unsafe_allow_html=True)
-        
-        glossary_html = "<div style='background: white; padding: 24px; border-radius: 12px; border: 1px solid #E2E8F0;'>"
-        for cat_data in st.session_state.glossary_result:
-            cat_name = cat_data.get("category", "その他")
-            terms = cat_data.get("terms", [])
-            if terms:
-                glossary_html += f"<div class='glossary-category'>■ {cat_name}</div>"
-                glossary_html += "<div style='margin-bottom: 12px;'>"
-                for term_data in terms:
-                    term = term_data.get("term", "")
-                    exp = term_data.get("explanation", "")
-                    glossary_html += f"<div class='glossary-term'>{term}<span class='tooltip-text'>{exp}</span></div>"
-                glossary_html += "</div>"
-        glossary_html += "</div>"
-        st.markdown(glossary_html, unsafe_allow_html=True)
+        with st.expander("📚 主要用語集の解説を表示", expanded=False):
+            st.markdown("<p style='font-size: 13px; color: #64748B; margin-bottom: 16px;'>※ 用語にカーソルを合わせると説明が表示されます。</p>", unsafe_allow_html=True)
+            
+            glossary_html = "<div style='background: white; padding: 24px; border-radius: 12px; border: 1px solid #E2E8F0;'>"
+            for cat_data in st.session_state.glossary_result:
+                cat_name = cat_data.get("category", "その他")
+                terms = cat_data.get("terms", [])
+                if terms:
+                    glossary_html += f"<div class='glossary-category'>■ {cat_name}</div>"
+                    glossary_html += "<div style='margin-bottom: 12px;'>"
+                    for term_data in terms:
+                        term = term_data.get("term", "")
+                        exp = term_data.get("explanation", "")
+                        glossary_html += f"<div class='glossary-term'>{term}<span class='tooltip-text'>{exp}</span></div>"
+                    glossary_html += "</div>"
+            glossary_html += "</div>"
+            st.markdown(glossary_html, unsafe_allow_html=True)
 
     # -----------------
     # Chat QA Section
@@ -325,33 +404,11 @@ def show_translation_dialog(paper):
         st.markdown("<br><br>", unsafe_allow_html=True)
         st.markdown("<p class='section-header-jp'>論文Q&A (AIアシスタントに質問)</p>", unsafe_allow_html=True)
         
-        # Display existing chat messages
-        for msg in st.session_state.chat_history:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
-                
-        # Handle pending API call from previous form submit
-        if st.session_state.get("pending_qa"):
-            with st.chat_message("assistant"):
-                with st.spinner("思考中..."):
-                    try:
-                        payload = {
-                            "question": st.session_state.pending_qa,
-                            "context": st.session_state.translation_result, 
-                            "history": st.session_state.chat_history[:-1] # Don't send the current prompt in history again
-                        }
-                        res = requests.post(f"{BACKEND_URL}/qa", json=payload)
-                        res.raise_for_status()
-                        answer = res.json().get("answer", "")
-                        st.markdown(answer)
-                        # Save assistant response to history
-                        st.session_state.chat_history.append({"role": "assistant", "content": answer})
-                    except Exception as e:
-                        st.error(f"エラーが発生しました: {e}")
-            st.session_state.pending_qa = None
+        chat_container = st.container()
                 
         # Inline Chat Input Form
-        with st.form(key=f"qa_form_{len(st.session_state.chat_history)}", clear_on_submit=True, border=False):
+        form_key = f"qa_form_{st.session_state.current_paper_id}" if st.session_state.current_paper_id else "qa_form_default"
+        with st.form(key=form_key, clear_on_submit=True, border=False):
             col1, col2 = st.columns([8, 2])
             with col1:
                 prompt = st.text_input("質問", placeholder="この論文について質問する...", label_visibility="collapsed")
@@ -360,17 +417,103 @@ def show_translation_dialog(paper):
                 
         if submit and prompt:
             st.session_state.chat_history.append({"role": "user", "content": prompt})
-            st.session_state.pending_qa = prompt
-            st.rerun()
+            
+            with chat_container:
+                # Render the history immediately
+                for msg in st.session_state.chat_history:
+                    with st.chat_message(msg["role"]):
+                        st.markdown(msg["content"])
+                        
+                with st.chat_message("assistant"):
+                    with st.spinner("思考中..."):
+                        try:
+                            payload = {
+                                "question": prompt,
+                                "context": str(st.session_state.translation_result), 
+                                "history": st.session_state.chat_history[:-1]
+                            }
+                            res = requests.post(f"{BACKEND_URL}/qa", json=payload)
+                            res.raise_for_status()
+                            answer = res.json().get("answer", "")
+                            st.markdown(answer)
+                            # Save assistant response to history
+                            st.session_state.chat_history.append({"role": "assistant", "content": answer})
+                            
+                            # Sync chat history back to database
+                            if st.session_state.current_paper_id:
+                                try:
+                                    requests.post(f"{BACKEND_URL}/update_chat", json={
+                                        "paper_id": st.session_state.current_paper_id,
+                                        "chat_history": st.session_state.chat_history
+                                    }, timeout=3)
+                                except Exception as db_e:
+                                    st.error(f"チャット履歴の保存に失敗しました: {db_e}")
+                                    
+                        except Exception as e:
+                            st.error(f"エラーが発生しました: {e}")
+        else:
+            with chat_container:
+                for msg in st.session_state.chat_history:
+                    with st.chat_message(msg["role"]):
+                        st.markdown(msg["content"])
 
 # -----------------
 # Main Search View
 # -----------------
-st.markdown('<div class="brand-header"><div class="brand-icon">S</div><h1 class="brand-title">ScholarStream</h1></div>', unsafe_allow_html=True)
+head_col1, head_col2 = st.columns([9, 1])
+with head_col1:
+    st.markdown('<div class="brand-header"><div class="brand-icon">S</div><h1 class="brand-title">ScholarStream</h1></div>', unsafe_allow_html=True)
+
+with head_col2:
+    st.markdown("<div style='margin-top: 16px;'></div>", unsafe_allow_html=True)
+    with st.popover("☰ 履歴", use_container_width=True):
+        st.markdown("<h3 style='text-align: center; color: #1E293B; margin-bottom: 0;'>📚 翻訳履歴</h3>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center; color: #64748B; font-size: 13px; margin-bottom: 24px; margin-top: 4px;'>過去に確認した論文</p>", unsafe_allow_html=True)
+        
+        try:
+            res = requests.get(f"{BACKEND_URL}/history", timeout=5)
+            if res.status_code == 200:
+                history_data = res.json().get("history", [])
+                if not history_data:
+                    st.info("まだ翻訳履歴がありません。")
+                else:
+                    for idx, item in enumerate(history_data):
+                        title_display = item.get("title_jp") or item.get("title_en") or "名称不明"
+                        if len(title_display) > 35:
+                            title_display = title_display[:35] + "..."
+                            
+                        button_label = f"📄 {title_display}"
+                        if st.button(button_label, key=f"hist_btn_{item.get('paper_id')}_{idx}", use_container_width=True):
+                            st.session_state.selected_paper = {
+                                "title": item.get('title_en'),
+                                "pdf_url": item.get('source_url'),
+                                "published_date": item.get('published_date'),
+                                "source": "History",
+                                "snippet": "データベースから読み込みました（キャッシュ）。"
+                            }
+                            
+                            try:
+                                summary_json = json.loads(item.get('summary_json'))
+                                st.session_state.translation_result = summary_json
+                                st.session_state.glossary_result = summary_json.get('glossary', [])
+                            except Exception:
+                                st.session_state.translation_result = {"error": "解析エラー", "raw": item.get('summary_json')}
+                                st.session_state.glossary_result = []
+                                
+                            st.session_state.current_paper_id = item.get("paper_id")
+                            try:
+                                chat_hist_raw = item.get("chat_history")
+                                st.session_state.chat_history = json.loads(chat_hist_raw) if chat_hist_raw else []
+                            except Exception:
+                                st.session_state.chat_history = []
+                                
+                            st.session_state.is_translating = False
+                            show_translation_dialog(st.session_state.selected_paper)
+        except Exception as e:
+            st.error("履歴の取得に失敗しました。サーバーが起動していない可能性があります。")
 
 search_query = st.text_input("検索", value=st.session_state.get("last_query", ""), placeholder="例: attention is all you need", label_visibility="collapsed")
     
-
     
 # Filters
 col_time, col_sort, col_custom_time, _ = st.columns([2, 2, 4, 2])
@@ -513,7 +656,6 @@ if results:
             st.session_state.is_translating = True
             st.session_state.chat_history = []  # Clear chat history for new paper
             st.session_state.glossary_result = [] # Clear glossary
-            st.session_state.is_dialog_open = True
-            
-if st.session_state.get("is_dialog_open") and st.session_state.selected_paper:
-    show_translation_dialog(st.session_state.selected_paper)
+            st.session_state.current_paper_id = None
+            st.session_state.translation_result = None # Clear old translation results
+            show_translation_dialog(st.session_state.selected_paper)
