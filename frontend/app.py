@@ -1,666 +1,700 @@
-import streamlit as st
-import requests
+import gradio as gr
 import os
-from datetime import datetime, timedelta, date
-import os
+import sys
 import json
+import asyncio
+from datetime import datetime, timedelta, date
 
-BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'backend')))
 
-st.set_page_config(
-    page_title="ScholarStream",
-    layout="wide",
-    initial_sidebar_state="collapsed"
+from database import init_db
+from main import (
+    search_papers, 
+    translate_paper, 
+    qa_paper, 
+    get_history, 
+    update_chat,
+    SearchRequest, 
+    TranslateRequest, 
+    QARequest, 
+    QAChatUpdateRequest
 )
 
-st.write("✅ Frontend Container is Starting...")
+# SQLite database table configuration hook for local standalone runs
+init_db()
 
-# Custom CSS for styling
-st.markdown("""
-<style>
-    /* Global Styles */
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-    html, body, [class*="css"] {
-        font-family: 'Inter', sans-serif !important;
-    }
-    
-    .stApp {
-        background-color: #F8FAFC;
-    }
+class DummyRequest:
+    @property
+    def client(self):
+        class DummyClient:
+            host = "127.0.0.1"
+        return DummyClient()
 
-    /* Main Header Container */
-    .brand-header {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        margin-bottom: 24px;
-        padding-top: 1rem;
-    }
-    .brand-icon {
-        background: #2563EB;
-        color: white;
-        width: 36px;
-        height: 36px;
-        border-radius: 8px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 20px;
-        font-weight: bold;
-    }
-    .brand-title {
-        font-size: 24px;
-        font-weight: 700;
-        color: #0F172A;
-        margin: 0;
-    }
-    
-    /* Result Cards */
-    .result-card {
-        background: white;
-        border-radius: 12px;
-        padding: 24px;
-        margin-bottom: 16px;
-        border: 1px solid #E2E8F0;
-        box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
-    }
-    
-    /* Translation Output Container */
-    .translation-output {
-        background-color: white;
-        padding: 24px;
-        border-radius: 12px;
-        border: 1px solid #E2E8F0;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
-        color: #0F172A;
-        line-height: 1.6;
-        font-size: 15px;
-    }
-    .translation-output h1 { font-size: 22px; color: #1E293B; border-bottom: 2px solid #E2E8F0; padding-bottom: 8px; margin-top: 16px; font-weight: 700; }
-    .translation-output h2 { font-size: 18px; color: #2563EB; margin-top: 24px; margin-bottom: 12px; font-weight: 600; }
-    .translation-output p { font-size: 15px; color: #334155; line-height: 1.6; margin-bottom: 12px; }
-    .translation-output blockquote { border-left: 4px solid #3B82F6; background-color: #F8FAFC; padding: 12px 16px; margin: 0 0 16px 0; color: #475569; font-style: normal; }
-    .translation-output blockquote p { margin-bottom: 0; font-weight: 500; }
-    .translation-output ul { margin-bottom: 16px; padding-left: 24px; }
-    .translation-output li { margin-bottom: 8px; font-size: 15px; color: #334155; line-height: 1.6; }
-    
-    /* Badges */
-    .badge {
-        display: inline-block;
-        padding: 4px 8px;
-        border-radius: 12px;
-        font-size: 12px;
-        font-weight: 600;
-        margin-right: 6px;
-        margin-bottom: 8px;
-    }
-    .badge-top-conf {
-        background-color: #FEF2F2;
-        color: #DC2626;
-        border: 1px solid #FECACA;
-    }
-    .badge-trend {
-        background-color: #F0FDF4;
-        color: #16A34A;
-        border: 1px solid #BBF7D0;
-    }
-    .badge-source {
-        background-color: #F8FAFC;
-        color: #475569;
-        border: 1px solid #E2E8F0;
-    }
+MAX_RESULTS = 20
 
-    /* Hide standard Streamlit elements */
-    #MainMenu {visibility: hidden;}
-    header {visibility: hidden;}
-    footer {visibility: hidden;}
+CSS = """
+body, .gradio-container {
+    font-family: 'Inter', sans-serif !important;
+    background-color: #F8FAFC !important;
+}
 
-    /* Custom Radio (USAGE MODE) */
-    div.row-widget.stRadio > div {
-        display: flex;
-        flex-direction: row;
-        gap: 10px;
-        background-color: transparent;
-    }
+footer {display: none !important;}
 
-    /* Buttons */
-    div.stButton > button:first-child[kind="primary"] {
-        background-color: #1D4ED8 !important;
-        color: white !important;
-        font-weight: 600 !important;
-        border: none !important;
-        border-radius: 8px;
-        min-height: 48px;
-    }
-    div.stButton > button:first-child[kind="primary"]:hover {
-        background-color: #1E40AF !important;
-    }
-    
-    /* Input border */
-    .stTextInput input {
-        border-radius: 8px;
-        border: 1px solid #CBD5E1;
-        padding: 12px 16px;
-    }
-    
-    /* Section Headers */
-    .section-header-en {
-        color: #64748B;
-        text-align: center;
-        font-size: 14px;
-        font-weight: 700;
-        margin: 0 0 16px 0;
-        padding-bottom: 8px;
-        border-bottom: 2px solid #E2E8F0;
-    }
-    .section-header-jp {
-        color: #2563EB;
-        text-align: center;
-        font-size: 14px;
-        font-weight: 700;
-        margin: 0 0 16px 0;
-        padding-bottom: 8px;
-        border-bottom: 2px solid #2563EB;
-    }
-    
-    /* Text rendering tweaks */
-    p { margin-bottom: 0.5rem; }
-    h3 { margin-bottom: 0.5rem; margin-top: 0; }
-    
-    /* Title Link */
-    .title-link {
-        color: #0F172A;
-        text-decoration: none;
-        transition: color 0.2s ease;
-    }
-    .title-link:hover {
-        color: #2563EB;
-        text-decoration: underline;
-    }
+.brand-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 24px;
+    padding-top: 1rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid #E2E8F0;
+}
+.brand-icon {
+    background: #0F172A;
+    color: white;
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    font-weight: 700;
+}
+.brand-title {
+    font-size: 20px;
+    font-weight: 600;
+    color: #0F172A;
+    margin: 0;
+    letter-spacing: -0.01em;
+}
 
-    /* Glossary Tooltips */
-    .glossary-term {
-        position: relative;
-        display: inline-block;
-        border-bottom: 1px dashed #3B82F6;
-        color: #3B82F6;
-        cursor: help;
-        margin-right: 12px;
-        margin-bottom: 8px;
-        font-weight: 500;
-    }
-    .glossary-term .tooltip-text {
-        visibility: hidden;
-        width: 250px;
-        background-color: #1E293B;
-        color: #F8FAFC;
-        text-align: left;
-        border-radius: 6px;
-        padding: 8px 12px;
-        position: absolute;
-        z-index: 10;
-        bottom: 125%;
-        left: 50%;
-        transform: translateX(-50%);
-        opacity: 0;
-        transition: opacity 0.2s;
-        font-size: 13px;
-        font-weight: 400;
-        line-height: 1.4;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-    }
-    .glossary-term .tooltip-text::after {
-        content: "";
-        position: absolute;
-        top: 100%;
-        left: 50%;
-        margin-left: -5px;
-        border-width: 5px;
-        border-style: solid;
-        border-color: #1E293B transparent transparent transparent;
-    }
-    .glossary-term:hover .tooltip-text {
-        visibility: visible;
-        opacity: 1;
-    }
-    .glossary-category {
-        font-size: 14px;
-        font-weight: 700;
-        color: #475569;
-        margin-top: 16px;
-        margin-bottom: 8px;
-        padding-bottom: 4px;
-        border-bottom: 1px solid #E2E8F0;
-    }
-</style>
-""", unsafe_allow_html=True)
+.tldr-box {
+    background-color: #F0F9FF; 
+    border-left: 4px solid #0EA5E9; 
+    padding: 20px 24px; 
+    border-radius: 4px; 
+    margin-bottom: 28px; 
+    color: #0F172A;
+}
 
-# State Management
-if "search_results" not in st.session_state:
-    st.session_state.search_results = []
-if "selected_paper" not in st.session_state:
-    st.session_state.selected_paper = None
-if "translation_result" not in st.session_state:
-    st.session_state.translation_result = None
-if "is_searching" not in st.session_state:
-    st.session_state.is_searching = False
-if "is_translating" not in st.session_state:
-    st.session_state.is_translating = False
+.section-header-en {
+    color: #64748B;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin: 0 0 12px 0;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #E2E8F0;
+}
 
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-if "glossary_result" not in st.session_state:
-    st.session_state.glossary_result = []
-if "current_paper_id" not in st.session_state:
-    st.session_state.current_paper_id = None
+.snippet-pane {
+    background-color: #FFFFFF;
+    border: 1px solid #E2E8F0;
+    padding: 20px;
+    border-radius: 6px;
+    color: #334155;
+    font-size: 14px;
+    line-height: 1.6;
+    margin-top: 12px;
+}
 
-# -----------------
-# App Logic
+.original-btn {
+    display: inline-block;
+    margin: 20px 0 0 0;
+    padding: 8px 16px;
+    background-color: #FFFFFF;
+    color: #0F172A;
+    text-decoration: none;
+    border-radius: 6px;
+    font-weight: 500;
+    font-size: 13px;
+    border: 1px solid #CBD5E1;
+    transition: all 0.15s ease;
+}
+.original-btn:hover {
+    background-color: #F8FAFC;
+    border-color: #94A3B8;
+}
 
-@st.dialog("📖 閲覧中", width="large")
-def show_translation_dialog(paper):
+.custom-markdown h3 {
+    font-size: 18px;
+    font-weight: 600;
+    color: #0F172A;
+    margin-top: 24px;
+    margin-bottom: 12px;
+}
+.custom-markdown h4 {
+    font-size: 16px;
+    font-weight: 600;
+    color: #334155;
+    margin-top: 24px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid #E2E8F0;
+    padding-bottom: 8px;
+}
+.custom-markdown p {
+    font-size: 15px;
+    line-height: 1.7;
+    color: #334155;
+}
 
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("<p class='section-header-en'>原文</p>", unsafe_allow_html=True)
-        st.markdown(f"""
-        <div style='border-left: 4px solid #3B82F6; padding-left: 16px; margin-top: 16px; background-color: #F8FAFC; padding: 24px; border-radius: 0 8px 8px 0; color: #334155; height: 60vh; overflow-y: auto;'>
-            <p style='font-size: 15px; line-height: 1.6;'><b>Snippet:</b><br/>{paper.get('snippet')}</p>
-        </div>
-        """, unsafe_allow_html=True)
-        if paper.get('pdf_url'):
-             st.markdown(f"<div style='margin-top: 24px; text-align: center;'><a href='{paper.get('pdf_url')}' target='_blank' style='display: inline-block; padding: 10px 20px; background-color: #F1F5F9; color: #0F172A; text-decoration: none; border-radius: 8px; font-weight: 500; border: 1px solid #E2E8F0;'>元のPDFを開く</a></div>", unsafe_allow_html=True)
+/* Custom Card Layout */
+.card-wrapper {
+    background: #FFFFFF !important;
+    border: 1px solid #E2E8F0 !important;
+    border-radius: 8px !important;
+    padding: 20px !important;
+    margin-bottom: 16px !important;
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05) !important;
+    transition: box-shadow 0.2s ease !important;
+}
+.card-wrapper:hover {
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03) !important;
+}
 
-    with col2:
-        st.markdown("<p class='section-header-jp'>翻訳・要約結果</p>", unsafe_allow_html=True)
-        
-        if st.session_state.is_translating:
-            with st.spinner("翻訳・要約中..."):
-                try:
-                    res = requests.post(f"{BACKEND_URL}/translate", json={
-                        "pdf_url": paper.get("pdf_url") or "",
-                        "title": paper.get("title") or "",
-                        "snippet": paper.get("snippet") or "",
-                        "published_date": paper.get("published_date") or "",
-                        "source": paper.get("source") or "",
-                        "mode": "研究用 (詳細な翻訳と考察)"
-                    })
-                    res.raise_for_status()
-                    data = res.json()
-                    st.session_state.translation_result = data.get("translation")
-                    st.session_state.glossary_result = data.get("glossary", [])
-                    st.session_state.current_paper_id = data.get("paper_id")
-                    st.session_state.chat_history = data.get("chat_history", [])
-                except requests.exceptions.HTTPError as e:
-                    if res.status_code == 429:
-                        st.warning("本日の利用上限に達しました。明日またご利用ください。")
-                    elif res.status_code == 500:
-                        st.error("Backend Error: Please check if GEMINI_API_KEY is correctly set in .env")
-                    else:
-                        st.error(f"Translation failed: {res.json().get('detail', 'Unknown error')}")
-                except Exception as e:
-                    st.error(f"Translation failed: {e}")
-            st.session_state.is_translating = False
+.badge-top-conf {
+    background-color: #FEF2F2;
+    color: #991B1B;
+    border: 1px solid #FECACA;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    margin-right: 6px;
+    text-transform: uppercase;
+}
+.badge-trend {
+    background-color: #F0FDF4;
+    color: #166534;
+    border: 1px solid #BBF7D0;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    margin-right: 6px;
+    text-transform: uppercase;
+}
+.badge-default {
+    background-color: #F8FAFC; 
+    color: #475569; 
+    border: 1px solid #E2E8F0; 
+    padding: 2px 8px; 
+    border-radius: 4px; 
+    font-size: 11px; 
+    margin-right: 6px; 
+    font-weight: 600;
+}
+.title-link {
+    color: #0F172A;
+    text-decoration: none;
+    transition: color 0.15s ease;
+}
+.title-link:hover {
+    color: #2563EB;
+}
+"""
 
-        if st.session_state.translation_result:
-            res = st.session_state.translation_result
-            if isinstance(res, dict) and "tldr" in res:
-                title_jp = res.get('title_jp', '無題')
-                title_en = res.get('title_en', '')
-                date_str = paper.get('published_date') or "YYYY/MM/DD"
-                source_str = paper.get('source') or "Unknown"
-                
-                # Title
-                st.markdown(f"### 📄 {title_jp}")
-                st.caption(f"Original: {title_en} | {date_str} | {source_str}")
-                
-                # TL;DR (強調表示)
-                with st.container():
-                    tldr_value = res.get('tldr', '')
-                    if isinstance(tldr_value, list):
-                        tldr_text = "<br/><br/>".join([str(item) for item in tldr_value])
-                    else:
-                        tldr_text = str(tldr_value).replace('\n', '<br/><br/>')
-                        
-                    st.markdown(f"""
-                    <div style='background-color: #F8FAFC; border-left: 6px solid #3B82F6; padding: 20px 24px; border-radius: 8px; margin-bottom: 24px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);'>
-                        <h3 style='margin-top: 0; color: #1E293B; font-size: 1.25em; margin-bottom: 16px; border-bottom: none;'>📝 3行でわかる今回の研究</h3>
-                        <div style='display: flex; gap: 12px; align-items: flex-start;'>
-                            <div style='font-size: 1.4em; margin-top: 2px;'>💡</div>
-                            <div style='font-size: 1.1em; line-height: 1.8; font-weight: 600; color: #334155;'>
-                                {tldr_text}
-                            </div>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                st.divider()
-                
-                # Sections
-                st.markdown("#### 🔍 研究の背景と目的")
-                st.write(res.get('background', ''))
-                st.divider()
-                
-                st.markdown("#### ⚙️ 提案手法（メソッド）")
-                st.write(res.get('method', ''))
-                st.divider()
-                
-                st.markdown("#### 📊 実験と結果")
-                st.write(res.get('result', ''))
-                st.divider()
-                
-                st.markdown("#### 💡 考察・今後の課題")
-                st.write(res.get('discussion', ''))
-                st.divider()
-                
-                # Markdown Copy
-                copy_tldr = tldr_value if isinstance(tldr_value, list) else [res.get('tldr', '')]
-                copy_tldr_str = "\n".join([str(item) for item in copy_tldr])
-                
-                copy_text = f"# {title_jp}\n*Original Title: {title_en}*\n\n## 📝 3行でわかる今回の研究（TL;DR）\n{copy_tldr_str}\n\n## 🔍 研究の背景と目的\n{res.get('background')}\n\n## ⚙️ 提案手法（メソッド）\n{res.get('method')}\n\n## 📊 実験と結果\n{res.get('result')}\n\n## 💡 考察・今後の課題\n{res.get('discussion')}"
-                with st.expander("📝 翻訳結果をMarkdownとしてコピーする"):
-                     st.code(copy_text, language="markdown")
-                     
-                # Terms
-                st.session_state.glossary_result = res.get('glossary', [])
-            else:
-                # Fallback
-                text_content = res if isinstance(res, str) else res.get("raw", str(res))
-                st.markdown(f"""
-                <div class='translation-output' style='height: 60vh; overflow-y: auto;'>
-                    {text_content.replace(chr(10), '<br/>')}
-                </div>
-                """, unsafe_allow_html=True)
-                
-                st.divider()
-                with st.expander("📝 翻訳結果をMarkdownとしてコピーする"):
-                     st.code(text_content, language="markdown")
-
-    # -----------------
-    # Glossary Section
-    # -----------------
-    if st.session_state.translation_result and st.session_state.glossary_result:
-        st.markdown("<br><br>", unsafe_allow_html=True)
-        with st.expander("📚 主要用語集の解説を表示", expanded=False):
-            st.markdown("<p style='font-size: 13px; color: #64748B; margin-bottom: 16px;'>※ 用語にカーソルを合わせると説明が表示されます。</p>", unsafe_allow_html=True)
-            
-            glossary_html = "<div style='background: white; padding: 24px; border-radius: 12px; border: 1px solid #E2E8F0;'>"
-            for cat_data in st.session_state.glossary_result:
-                cat_name = cat_data.get("category", "その他")
-                terms = cat_data.get("terms", [])
-                if terms:
-                    glossary_html += f"<div class='glossary-category'>■ {cat_name}</div>"
-                    glossary_html += "<div style='margin-bottom: 12px;'>"
-                    for term_data in terms:
-                        term = term_data.get("term", "")
-                        exp = term_data.get("explanation", "")
-                        glossary_html += f"<div class='glossary-term'>{term}<span class='tooltip-text'>{exp}</span></div>"
-                    glossary_html += "</div>"
-            glossary_html += "</div>"
-            st.markdown(glossary_html, unsafe_allow_html=True)
-
-    # -----------------
-    # Chat QA Section
-    # -----------------
-    if st.session_state.translation_result:
-        st.markdown("<br><br>", unsafe_allow_html=True)
-        st.markdown("<p class='section-header-jp'>論文Q&A (AIアシスタントに質問)</p>", unsafe_allow_html=True)
-        
-        chat_container = st.container()
-                
-        # Inline Chat Input Form
-        form_key = f"qa_form_{st.session_state.current_paper_id}" if st.session_state.current_paper_id else "qa_form_default"
-        with st.form(key=form_key, clear_on_submit=True, border=False):
-            col1, col2 = st.columns([8, 2])
-            with col1:
-                prompt = st.text_input("質問", placeholder="この論文について質問する...", label_visibility="collapsed")
-            with col2:
-                submit = st.form_submit_button("送信", type="primary", use_container_width=True)
-                
-        if submit and prompt:
-            st.session_state.chat_history.append({"role": "user", "content": prompt})
-            
-            with chat_container:
-                # Render the history immediately
-                for msg in st.session_state.chat_history:
-                    with st.chat_message(msg["role"]):
-                        st.markdown(msg["content"])
-                        
-                with st.chat_message("assistant"):
-                    with st.spinner("思考中..."):
-                        try:
-                            payload = {
-                                "question": prompt,
-                                "context": str(st.session_state.translation_result), 
-                                "history": st.session_state.chat_history[:-1]
-                            }
-                            res = requests.post(f"{BACKEND_URL}/qa", json=payload)
-                            res.raise_for_status()
-                            answer = res.json().get("answer", "")
-                            st.markdown(answer)
-                            # Save assistant response to history
-                            st.session_state.chat_history.append({"role": "assistant", "content": answer})
-                            
-                            # Sync chat history back to database
-                            if st.session_state.current_paper_id:
-                                try:
-                                    requests.post(f"{BACKEND_URL}/update_chat", json={
-                                        "paper_id": st.session_state.current_paper_id,
-                                        "chat_history": st.session_state.chat_history
-                                    }, timeout=3)
-                                except Exception as db_e:
-                                    st.error(f"チャット履歴の保存に失敗しました: {db_e}")
-                                    
-                        except Exception as e:
-                            st.error(f"エラーが発生しました: {e}")
+def generate_card_html(paper):
+    paper_url = paper.get('link') or paper.get('pdf_url') or '#'
+    badges_html = ""
+    for badge in paper.get("badges", []):
+        if "Top Conf" in badge:
+            badges_html += f"<span class='badge-top-conf'>{badge}</span>"
         else:
-            with chat_container:
-                for msg in st.session_state.chat_history:
-                    with st.chat_message(msg["role"]):
-                        st.markdown(msg["content"])
-
-# -----------------
-# Main Search View
-# -----------------
-head_col1, head_col2 = st.columns([9, 1])
-with head_col1:
-    st.markdown('<div class="brand-header"><div class="brand-icon">S</div><h1 class="brand-title">ScholarStream</h1></div>', unsafe_allow_html=True)
-    st.caption(f"🔧 Debug: Connecting to backend at `{BACKEND_URL}`")
-
-with head_col2:
-    st.markdown("<div style='margin-top: 16px;'></div>", unsafe_allow_html=True)
-    with st.popover("☰ 履歴", use_container_width=True):
-        st.markdown("<h3 style='text-align: center; color: #1E293B; margin-bottom: 0;'>📚 翻訳履歴</h3>", unsafe_allow_html=True)
-        st.markdown("<p style='text-align: center; color: #64748B; font-size: 13px; margin-bottom: 24px; margin-top: 4px;'>過去に確認した論文</p>", unsafe_allow_html=True)
+            badges_html += f"<span class='badge-trend'>{badge}</span>"
+    if paper.get("citation_count"):
+        badges_html += f"<span class='badge-default'>Citations: {paper.get('citation_count')}</span>"
         
-        try:
-            res = requests.get(f"{BACKEND_URL}/history", timeout=5)
-            if res.status_code == 200:
-                history_data = res.json().get("history", [])
-                if not history_data:
-                    st.info("まだ翻訳履歴がありません。")
-                else:
-                    for idx, item in enumerate(history_data):
-                        title_display = item.get("title_jp") or item.get("title_en") or "名称不明"
-                        if len(title_display) > 35:
-                            title_display = title_display[:35] + "..."
-                            
-                        button_label = f"📄 {title_display}"
-                        if st.button(button_label, key=f"hist_btn_{item.get('paper_id')}_{idx}", use_container_width=True):
-                            st.session_state.selected_paper = {
-                                "title": item.get('title_en'),
-                                "pdf_url": item.get('source_url'),
-                                "published_date": item.get('published_date'),
-                                "source": "History",
-                                "snippet": "データベースから読み込みました（キャッシュ）。"
-                            }
-                            
-                            try:
-                                summary_json = json.loads(item.get('summary_json'))
-                                st.session_state.translation_result = summary_json
-                                st.session_state.glossary_result = summary_json.get('glossary', [])
-                            except Exception:
-                                st.session_state.translation_result = {"error": "解析エラー", "raw": item.get('summary_json')}
-                                st.session_state.glossary_result = []
-                                
-                            st.session_state.current_paper_id = item.get("paper_id")
-                            try:
-                                chat_hist_raw = item.get("chat_history")
-                                st.session_state.chat_history = json.loads(chat_hist_raw) if chat_hist_raw else []
-                            except Exception:
-                                st.session_state.chat_history = []
-                                
-                            st.session_state.is_translating = False
-                            show_translation_dialog(st.session_state.selected_paper)
-        except Exception as e:
-            st.error("履歴の取得に失敗しました。サーバーが起動していない可能性があります。")
-
-search_query = st.text_input("検索", value=st.session_state.get("last_query", ""), placeholder="例: attention is all you need", label_visibility="collapsed")
+    source_badge = paper.get('source', 'Unknown')
+    date_str = paper.get('published_date')
+    date_str = f"{date_str}年" if date_str else "発行年不明"
     
-    
-# Filters
-col_time, col_sort, col_custom_time, _ = st.columns([2, 2, 4, 2])
-with col_time:
-    time_preset = st.selectbox(
-        "期間指定", 
-        options=["指定なし", "過去1年間", "過去5年間", "過去10年間", "カスタム期間指定"],
-        index=0
-    )
+    return f"""
+    <div style="margin-bottom: 8px;">{badges_html}</div>
+    <h3 style='margin-top: 8px; margin-bottom: 4px; font-size: 16px;'><a href='{paper_url}' target='_blank' class='title-link'>{paper.get('title')}</a></h3>
+    <p style='color: #2563EB; font-size: 13px; margin-bottom: 6px; font-weight:500;'>{paper.get('authors')}</p>
+    <p style='color: #64748B; font-size: 12px; margin-bottom: 12px; font-weight: 500;'>Source: {source_badge} | Year: {date_str}</p>
+    <p style='color: #475569; font-size: 14px; margin-bottom: 0px; line-height: 1.5;'>{paper.get('snippet')}</p>
+    """
 
-with col_sort:
-    sort_by = st.selectbox(
-        "並び替え",
-        options=["関連度順 (Relevance)", "最新順 (Newest)", "古い順 (Oldest)"],
-        index=0
-    )
-    
-start_year_val = None
-end_year_val = None
-current_year = date.today().year
+def run_search(query, time_preset, sort_by):
+    current_year = date.today().year
+    start_year_val = None
+    end_year_val = None
+    if time_preset == "過去1年間":
+        start_year_val = str(current_year - 1)
+        end_year_val = str(current_year)
+    elif time_preset == "過去5年間":
+        start_year_val = str(current_year - 5)
+        end_year_val = str(current_year)
+    elif time_preset == "過去10年間":
+        start_year_val = str(current_year - 10)
+        end_year_val = str(current_year)
+        
+    sort_by_val = "relevance"
+    if "Newest" in sort_by: sort_by_val = "newest"
+    elif "Oldest" in sort_by: sort_by_val = "oldest"
 
-if time_preset == "カスタム期間指定":
-    with col_custom_time:
-        st.markdown("<div style='margin-top: 2rem;'></div>", unsafe_allow_html=True)
-        custom_years = st.slider(
-            "年代を指定",
-            min_value=1990,
-            max_value=current_year,
-            value=(current_year - 5, current_year),
-            step=1,
-            label_visibility="collapsed"
+    try:
+        req_obj = SearchRequest(
+            query=query,
+            start_year=start_year_val,
+            end_year=end_year_val,
+            sort_by=sort_by_val
         )
-        # st.slider returns a tuple when you provide a tuple as value
-        start_year_val = str(custom_years[0])
-        end_year_val = str(custom_years[1])
-             
-elif time_preset == "過去1年間":
-    start_year_val = str(current_year - 1)
-    end_year_val = str(current_year)
-elif time_preset == "過去5年間":
-    start_year_val = str(current_year - 5)
-    end_year_val = str(current_year)
-elif time_preset == "過去10年間":
-    start_year_val = str(current_year - 10)
-    end_year_val = str(current_year)
-    
-# Sort parsed values
-sort_by_val = "relevance"
-if "Newest" in sort_by: sort_by_val = "newest"
-elif "Oldest" in sort_by: sort_by_val = "oldest"
+        data_dict = asyncio.run(search_papers(req_obj))
+        if hasattr(data_dict, "dict"): data_dict = data_dict.dict()
+        results = data_dict.get("results", [])
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        # Default empty returns for blocks
+        updates = []
+        for i in range(MAX_RESULTS):
+            updates.append(gr.update(visible=False))
+            updates.append(gr.update(value=""))
+        return [
+            [], 
+            gr.update(visible=True), 
+            gr.update(visible=False), 
+            f"<div style='color:#DC2626;'>Search failed: {e}</div>"
+        ] + updates
 
-col_search, _ = st.columns([1, 5])
-with col_search:
-    if st.button("検索", type="primary", use_container_width=True):
-        st.session_state.last_query = search_query
-        st.session_state.is_searching = True
-        st.session_state.search_results = []
-        st.session_state.translation_result = None
-        st.session_state.glossary_result = []
+    if not results:
+        updates = []
+        for i in range(MAX_RESULTS):
+            updates.append(gr.update(visible=False))
+            updates.append(gr.update(value=""))
+        return [
+            [], 
+            gr.update(visible=True), 
+            gr.update(visible=False), 
+            "<div style='color:#475569;'>条件に一致する論文が見つかりませんでした。別のキーワードや期間でお試しください。</div>"
+        ] + updates
 
-if st.session_state.is_searching:
-    if not search_query:
-        st.error("検索キーワードを入力してください。")
-        st.session_state.is_searching = False
-    else:
-        with st.spinner("論文を検索中（arXiv & Google Scholar）..."):
-            try:
-                payload = {
-                    "query": search_query,
-                    "start_year": start_year_val,
-                    "end_year": end_year_val,
-                    "sort_by": sort_by_val
-                }
-                res = requests.post(f"{BACKEND_URL}/search", json=payload)
-                res.raise_for_status()
-                data = res.json()
-                st.session_state.search_results = data.get("results", [])
-            except requests.exceptions.HTTPError as e:
-                if res.status_code == 500:
-                    st.error("Backend Error: Please check if SERPAPI_API_KEY is correctly set in .env")
-                else:
-                    st.error(f"Search failed: HTTP {res.status_code}")
-            except Exception as e:
-                st.error(f"Search request failed: {e}")
-        st.session_state.is_searching = False
-        
-        if st.session_state.search_results is not None and len(st.session_state.search_results) == 0:
-            st.info("条件に一致する論文が見つかりませんでした。別のキーワードや期間でお試しください。")
-
-st.divider()
-
-results = st.session_state.search_results
-if results:
-    # Sort explicitly in UI to guarantee standard behavior as requested
-    # Dates that are None will be treated as very old so they go to the bottom of Newest
     if sort_by_val == "newest":
         results = sorted(results, key=lambda x: x.get('published_date') or '0000', reverse=True)
     elif sort_by_val == "oldest":
         results = sorted(results, key=lambda x: x.get('published_date') or '9999')
-        
-    st.markdown(f"<p style='color: #64748B; font-size: 14px;'>「{st.session_state.last_query}」の検索結果 {len(results)}件</p>", unsafe_allow_html=True)
-    for idx, paper in enumerate(results):
-        paper_url = paper.get('link') or paper.get('pdf_url') or '#'
-            
-        # Construct Badges HTML
-        badges_html = ""
-        for badge in paper.get("badges", []):
-            if "Top Conf" in badge:
-                badges_html += f"<span class='badge badge-top-conf'>🔥 {badge}</span>"
-            else:
-                badges_html += f"<span class='badge badge-trend'>💡 {badge}</span>"
-                
-        if paper.get("citation_count"):
-            badges_html += f"<span class='badge' style='background-color:#F8FAFC; color:#64748B; border:1px solid #E2E8F0'>📈 Citations: {paper.get('citation_count')}</span>"
 
-        # Parse and format Japanese date label
-        source_badge = paper.get('source', 'Unknown')
-        date_str = paper.get('published_date')
-        if date_str:
-            date_str = f"{date_str}年"
+    results = results[:MAX_RESULTS]
+    status_html = f"<p style='color: #64748B; font-size: 13px; font-weight: 500;'>「{query}」の検索結果 {len(results)}件</p>"
+    
+    updates = []
+    for i in range(MAX_RESULTS):
+        if i < len(results):
+            paper = results[i]
+            html_content = generate_card_html(paper)
+            updates.append(gr.update(visible=True))
+            updates.append(gr.update(value=html_content))
         else:
-            # If backend failed to parse it entirely
-            date_str = "発行年不明"
-        
-        source_date_label = f"Source: {source_badge} | Year: {date_str}"
+            updates.append(gr.update(visible=False))
+            updates.append(gr.update(value=""))
 
-        # Wrap content manually so we don't break Streamlit layouts
-        st.markdown(f"""
-        <div class="result-card">
-            <div>{badges_html}</div>
-            <h3 style='margin-top: 8px; margin-bottom: 4px; font-size: 18px;'><a href='{paper_url}' target='_blank' class='title-link'>{paper.get('title')}</a></h3>
-            <p style='color: #2563EB; font-size: 14px; margin-bottom: 4px;'>{paper.get('authors')}</p>
-            <p style='color: #64748B; font-size: 13px; font-weight: 500; margin-bottom: 8px;'>📅 {source_date_label}</p>
-            <p style='color: #475569; font-size: 14px; margin-bottom: 16px; margin-top: 8px;'>{paper.get('snippet')}</p>
-        </div>
-        """, unsafe_allow_html=True)
+    return [
+        results,
+        gr.update(visible=True),   # view_search_list
+        gr.update(visible=False),  # view_translation_result
+        status_html
+    ] + updates
+
+def parse_translation_result(res, paper):
+    if isinstance(res, dict) and "tldr" in res:
+        title_jp = res.get('title_jp', '無題')
+        title_en = res.get('title_en', '')
+        date_str = paper.get('published_date') or "YYYY/MM/DD"
+        source_str = paper.get('source') or "Unknown"
         
-        if st.button("翻訳・要約", key=f"btn_translate_{idx}", type="primary"):
-            st.session_state.selected_paper = paper
-            st.session_state.is_translating = True
-            st.session_state.chat_history = []  # Clear chat history for new paper
-            st.session_state.glossary_result = [] # Clear glossary
-            st.session_state.current_paper_id = None
-            st.session_state.translation_result = None # Clear old translation results
-            show_translation_dialog(st.session_state.selected_paper)
+        tldr_value = res.get('tldr', '')
+        if isinstance(tldr_value, list):
+            tldr_text = "<br/><br/>".join([str(item) for item in tldr_value])
+        else:
+            tldr_text = str(tldr_value).replace('\n', '<br/><br/>')
+            
+        md = f"<div class='custom-markdown'>"
+        md += f"<h2 style='margin-top:0; font-size:20px; color:#0F172A;'>{title_jp}</h2>\n<span style='color:#64748B; font-size:13px;'>Original: {title_en} | {date_str} | {source_str}</span>\n\n"
+        md += f"<div class='tldr-box'><h3 style='margin-top:0; margin-bottom: 12px; color:#0F172A; font-size:16px;'>3行要約 (TL;DR)</h3>"
+        md += f"<div style='font-size:15px; line-height:1.7; color:#334155;'>{tldr_text}</div></div>\n\n"
+        
+        md += f"<h4>研究の背景と目的</h4>\n<p>{res.get('background', '')}</p>\n\n"
+        md += f"<h4>提案手法（メソッド）</h4>\n<p>{res.get('method', '')}</p>\n\n"
+        md += f"<h4>実験と結果</h4>\n<p>{res.get('result', '')}</p>\n\n"
+        md += f"<h4>考察・今後の課題</h4>\n<p>{res.get('discussion', '')}</p>\n\n"
+        md += f"</div>"
+        
+        glossary = res.get('glossary', [])
+        
+        glossary_html = ""
+        if glossary:
+            glossary_html = "<div style='background: white; padding: 20px; border-radius: 8px; border: 1px solid #E2E8F0;'>"
+            glossary_html += "<h4 style='color:#0F172A; font-size: 15px; margin-top:0; margin-bottom:12px;'>用語解説</h4>"
+            for cat_data in glossary:
+                cat_name = cat_data.get("category", "その他")
+                terms = cat_data.get("terms", [])
+                if terms:
+                    glossary_html += f"<p style='font-size:13px; font-weight:600; color:#64748B; margin-bottom:8px; margin-top:16px; text-transform:uppercase;'>{cat_name}</p><ul style='margin-top:0; padding-left: 20px; font-size:14px; color:#334155; line-height:1.6;'>"
+                    for term_data in terms:
+                        term = term_data.get("term", "")
+                        exp = term_data.get("explanation", "")
+                        glossary_html += f"<li style='margin-bottom:6px;'><b style='color:#0F172A;'>{term}</b>: {exp}</li>"
+                    glossary_html += "</ul>"
+            glossary_html += "</div>"
+            
+        return md, glossary_html
+    else:
+        text_content = res if isinstance(res, str) else res.get("raw", str(res))
+        return f"<div class='custom-markdown'><p>{text_content}</p></div>", ""
+
+def generate_original_pane(paper):
+    url = paper.get('pdf_url', '')
+    btn_html = f"<div style='margin-top:20px;'><a href='{url}' target='_blank' class='original-btn'>論文のURL (元のPDF) を開く</a></div>" if url and url != "NO_PDF_URL" else ""
+    return f"""
+    <div>
+        <div style='padding-bottom:12px;'><p class='section-header-en'>Original Source</p></div>
+        <div class='snippet-pane'>
+            <b style='color:#0F172A; font-size:13px;'>SNIPPET:</b><br/>{paper.get('snippet', '本文情報がありません')}
+        </div>
+        {btn_html}
+    </div>
+    """
+
+# Closure generator for mapping button clicks to specific indexes
+def make_loading_fn(idx):
+    def loading_fn(results_data):
+        paper = results_data[idx] if idx < len(results_data) else {}
+        original_html = generate_original_pane(paper)
+        loading_html = "<div style='padding:40px 20px; text-align:center;'><h3 style='color:#2563EB; font-size:18px;'>翻訳・要約を生成中...</h3><p style='color:#64748B; margin-top:12px;'>生成AIによる解析を行っています。これには最長で1分ほどかかる場合があります。</p></div>"
+        return (
+            gr.update(visible=False), # hide search list
+            gr.update(visible=True),  # show translation view
+            original_html,
+            loading_html,
+            gr.update(value=""), None, None, gr.update(value=[]), gr.update(value="")
+        )
+    return loading_fn
+
+def make_translate_fn(idx):
+    def translate_fn(results_data):
+        if not results_data or idx >= len(results_data):
+            return "", "<div style='color:#DC2626;'>エラー: 論文データが見つかりません</div>", gr.update(value=""), None, None, gr.update(value=[]), gr.update(value="")
+        
+        paper = results_data[idx]
+        original_html = generate_original_pane(paper)
+        
+        try:
+            req_obj = TranslateRequest(
+                pdf_url=paper.get("pdf_url") or "",
+                title=paper.get("title") or "",
+                snippet=paper.get("snippet") or "",
+                published_date=paper.get("published_date") or "",
+                source=paper.get("source") or "",
+                mode="研究用 (詳細な翻訳と考察)"
+            )
+            data_dict = translate_paper(req_obj, req=DummyRequest())
+            if hasattr(data_dict, "dict"): data_dict = data_dict.dict()
+            elif isinstance(data_dict, str): data_dict = json.loads(data_dict)
+                
+            res = data_dict.get("translation")
+            paper_id = data_dict.get("paper_id")
+            history = data_dict.get("chat_history", [])
+            
+            md, glossary_html = parse_translation_result(res, paper)
+            
+            chat_format = []
+            if isinstance(history, list):
+                for i in range(0, len(history), 2):
+                    user_msg = history[i]
+                    bot_msg = history[i+1] if i+1 < len(history) else None
+                    chat_format.append({"role": "user", "content": user_msg["content"]})
+                    if bot_msg:
+                        chat_format.append({"role": "assistant", "content": bot_msg["content"]})
+                    
+            raw_md = f"# {paper.get('title')}\n\n" + str(res.get('tldr', '')) + "\n\n## 背景\n" + str(res.get('background', '')) + "\n\n## 手法\n" + str(res.get('method', '')) + "\n\n## 結果\n" + str(res.get('result', '')) + "\n\n## 考察\n" + str(res.get('discussion', ''))
+                    
+            return original_html, md, glossary_html, paper_id, res, gr.update(value=chat_format), gr.update(value=raw_md)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return original_html, f"<div style='color:#DC2626;'>翻訳エラー (Error Info): {e}</div>", gr.update(value=""), None, None, gr.update(value=[]), gr.update(value="")
+    return translate_fn
+
+def load_history_dropdown():
+    try:
+        data_dict = get_history(req=DummyRequest())
+        if hasattr(data_dict, "dict"): data_dict = data_dict.dict()
+        history_data = data_dict.get("history", [])
+        if not history_data:
+            return gr.update(choices=["履歴なし"], value="履歴なし"), history_data
+        
+        choices = []
+        for item in history_data:
+            t = item.get("title_jp") or item.get("title_en") or "無題"
+            choices.append(f"[{item.get('paper_id')}] {t[:40]}")
+        return gr.update(choices=choices, value=choices[0] if choices else None), history_data
+    except Exception as e:
+        return gr.update(choices=[], value=None), []
+
+def do_load_history(selected_hist, history_data):
+    if not selected_hist or selected_hist == "履歴なし":
+        return (
+            gr.update(visible=True), gr.update(visible=False),
+            "", "<div style='color:#DC2626;'>履歴が選択されていません</div>", gr.update(value=""), None, None, gr.update(value=[]), gr.update(value="")
+        )
+    pid = selected_hist.split(']')[0][1:]
+    
+    item = next((x for x in history_data if str(x.get('paper_id')) == pid), None)
+    if not item:
+        return (
+            gr.update(visible=True), gr.update(visible=False),
+            "", "<div style='color:#DC2626;'>エラー: データが見つかりません</div>", gr.update(value=""), None, None, gr.update(value=[]), gr.update(value="")
+        )
+        
+    paper = {
+        "title": item.get('title_en'),
+        "pdf_url": item.get('source_url'),
+        "published_date": item.get('published_date'),
+        "source": "History",
+        "snippet": "データベースから読み込みました（キャッシュ）。"
+    }
+    
+    try:
+        summary_json = json.loads(item.get('summary_json'))
+    except:
+        summary_json = {"raw": item.get('summary_json')}
+        
+    try:
+        chat_hist = json.loads(item.get("chat_history") or "[]")
+    except:
+        chat_hist = []
+        
+    md, glossary_html = parse_translation_result(summary_json, paper)
+    original_html = generate_original_pane(paper)
+    
+    chat_format = []
+    for i in range(0, len(chat_hist), 2):
+        user_msg = chat_hist[i]
+        bot_msg = chat_hist[i+1] if i+1 < len(chat_hist) else None
+        chat_format.append({"role": "user", "content": user_msg["content"]})
+        if bot_msg:
+            chat_format.append({"role": "assistant", "content": bot_msg["content"]})
+            
+    raw_md = f"# {paper.get('title')}\n\n" + str(summary_json.get('tldr', '')) + "\n\n## 背景\n" + str(summary_json.get('background', '')) + "\n\n## 手法\n" + str(summary_json.get('method', '')) + "\n\n## 結果\n" + str(summary_json.get('result', '')) + "\n\n## 考察\n" + str(summary_json.get('discussion', ''))
+            
+    # Show translation layout and hide history selector layout
+    return (
+        gr.update(visible=False), gr.update(visible=True),
+        original_html, md, glossary_html, item.get('paper_id'), summary_json, gr.update(value=chat_format), gr.update(value=raw_md)
+    )
+
+def do_chat(message, history_ui, paper_id, translation_res):
+    if not paper_id or not message:
+        return "", history_ui
+        
+    past_roles = []
+    for msg in history_ui:
+        if isinstance(msg, dict):
+            past_roles.append(msg)
+        elif isinstance(msg, list) or isinstance(msg, tuple):
+            u, bot = msg
+            past_roles.append({"role": "user", "content": u})
+            if bot: pass # We'll just collect user and assistant normally from tuples if Gradio hands them back
+            
+    past_roles.append({"role": "user", "content": message})
+    
+    try:
+        req_obj = QARequest(
+            question=message,
+            context=str(translation_res), 
+            history=past_roles[:-1]
+        )
+        data_dict = qa_paper(req_obj)
+        if hasattr(data_dict, "dict"): data_dict = data_dict.dict()
+        
+        answer = data_dict.get("answer", "")
+        past_roles.append({"role": "assistant", "content": answer})
+        
+        up_req = QAChatUpdateRequest(paper_id=paper_id, chat_history=past_roles)
+        update_chat(up_req)
+        
+        return "", past_roles
+    except Exception as e:
+        past_roles.append({"role": "assistant", "content": f"エラーが発生しました: {str(e)}"})
+        return "", past_roles
+
+def return_to_search():
+    return gr.update(visible=True), gr.update(visible=False)
+
+def return_to_history():
+    return gr.update(visible=True), gr.update(visible=False)
+
+
+with gr.Blocks(theme=gr.themes.Base(primary_hue="blue", neutral_hue="slate"), css=CSS, title="ScholarStream") as demo:
+    gr.HTML('<style>@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");</style><div class="brand-header"><div class="brand-icon">S</div><h1 class="brand-title">ScholarStream</h1></div>')
+    
+    state_search_results = gr.State([])
+    state_history_data = gr.State([])
+    state_current_paper_id = gr.State(None)
+    state_translation_res = gr.State(None)
+    
+    with gr.Tabs():
+        # --- TAB 1: Search & Translate ---
+        with gr.Tab("論文を検索する"):
+            
+            # --- VIEW A: Search List ---
+            with gr.Column(visible=True) as view_search_list:
+                with gr.Row():
+                    with gr.Column(scale=10):
+                        query_input = gr.Textbox(placeholder="検索キーワードを入力してください (例: attention is all you need)", show_label=False)
+                    with gr.Column(scale=2):
+                        search_btn = gr.Button("検索", variant="primary")
+                        
+                with gr.Row():
+                    # Filter elements horizontally aligned under search
+                    time_preset = gr.Dropdown(show_label=False, choices=["指定なし", "過去1年間", "過去5年間", "過去10年間"], value="指定なし", container=False)
+                    sort_by = gr.Dropdown(show_label=False, choices=["関連度順 (Relevance)", "最新順 (Newest)", "古い順 (Oldest)"], value="関連度順 (Relevance)", container=False)
+                
+                gr.HTML("<hr style='margin: 24px 0 16px 0; border: none; border-top: 1px solid #E2E8F0;'/>")
+                search_status_html = gr.HTML("<div style='color: #64748B; font-size: 13px;'>ここに検索結果が表示されます</div>")
+                
+                # Dynamic List of fixed capacity (MAX_RESULTS)
+                result_card_blocks = []
+                for i in range(MAX_RESULTS):
+                    with gr.Column(visible=False, elem_classes="card-wrapper") as card_col:
+                        card_html = gr.HTML()
+                        card_btn = gr.Button(f"この論文を翻訳・要約する", variant="secondary", size="sm")
+                        result_card_blocks.append({"col": card_col, "html": card_html, "btn": card_btn})
+
+            # --- VIEW B: Translation Full Layout (Overlay alternative) ---
+            with gr.Column(visible=False) as view_translation_result:
+                back_to_search_btn = gr.Button("← 検索結果一覧に戻る", size="sm")
+                gr.HTML("<hr style='margin: 16px 0 24px 0; border: none; border-top: 1px solid #E2E8F0;'/>")
+                
+                with gr.Row():
+                    with gr.Column(scale=5):
+                        original_html_out = gr.HTML()
+                    with gr.Column(scale=7):
+                        translation_md = gr.HTML()
+                        
+                        with gr.Accordion("翻訳結果をMarkdownとしてコピーする", open=False):
+                            md_copy_box = gr.Textbox(show_label=False, max_lines=15, interactive=True)
+                        
+                        with gr.Accordion("主要用語集の解説", open=False):
+                            glossary_html_out = gr.HTML()
+                        
+                        with gr.Accordion("論文Q&A (AIアシスタントに質問)", open=True):
+                            chatbot = gr.Chatbot(height=300, show_label=False, value=[])
+                            chat_input = gr.Textbox(placeholder="この論文について質問...", show_label=False)
+
+        # --- TAB 2: History ---            
+        with gr.Tab("履歴から読み込み"):
+            
+            # --- VIEW C: History Selection ---
+            with gr.Column(visible=True) as view_history_list:
+                gr.Markdown("過去に翻訳した論文を読み込みます。")
+                with gr.Row():
+                    with gr.Column(scale=8):
+                        history_dropdown = gr.Dropdown(label="履歴を選択", choices=[], allow_custom_value=True)
+                    with gr.Column(scale=4):
+                        with gr.Row():
+                            load_history_btn = gr.Button("選択した履歴を読み込む", variant="primary")
+                            refresh_history_btn = gr.Button("リストを更新")
+            
+            # --- VIEW D: History Translation ---
+            with gr.Column(visible=False) as view_history_result:
+                back_to_history_btn = gr.Button("← 履歴選択に戻る", size="sm")
+                gr.HTML("<hr style='margin: 16px 0 24px 0; border: none; border-top: 1px solid #E2E8F0;'/>")
+                
+                with gr.Row():
+                    with gr.Column(scale=4):
+                        hist_original_html_out = gr.HTML()
+                    with gr.Column(scale=8):
+                        history_translation_md = gr.HTML()
+                        
+                        with gr.Accordion("翻訳結果をMarkdownとしてコピーする", open=False):
+                            hist_md_copy_box = gr.Textbox(show_label=False, max_lines=15, interactive=True)
+                                
+                        with gr.Accordion("主要用語集の解説", open=False):
+                            history_glossary_html = gr.HTML()
+                        
+                        with gr.Accordion("論文Q&A (AIアシスタントに質問)", open=True):
+                            history_chatbot = gr.Chatbot(height=300, show_label=False, value=[])
+                            history_chat_input = gr.Textbox(placeholder="この論文について質問...", show_label=False)
+
+    # --- Events ---
+    
+    # Compile outputs for search: State + Search View + Translated View + Status + (20 * [Col, Html])
+    search_outputs = [state_search_results, view_search_list, view_translation_result, search_status_html]
+    for block in result_card_blocks:
+        search_outputs.append(block["col"])
+        search_outputs.append(block["html"])
+        
+    # 1. Search Submissions
+    search_btn.click(
+        fn=run_search,
+        inputs=[query_input, time_preset, sort_by],
+        outputs=search_outputs
+    )
+    query_input.submit(
+        fn=run_search,
+        inputs=[query_input, time_preset, sort_by],
+        outputs=search_outputs
+    )
+
+    # 2. Assign Clicks to All Cards
+    for i in range(MAX_RESULTS):
+        btn = result_card_blocks[i]["btn"]
+        btn.click(
+            fn=make_loading_fn(i),
+            inputs=[state_search_results],
+            outputs=[view_search_list, view_translation_result, original_html_out, translation_md, glossary_html_out, state_current_paper_id, state_translation_res, chatbot, md_copy_box]
+        ).then(
+            fn=make_translate_fn(i),
+            inputs=[state_search_results],
+            outputs=[original_html_out, translation_md, glossary_html_out, state_current_paper_id, state_translation_res, chatbot, md_copy_box]
+        )
+    
+    # Navigation Back
+    back_to_search_btn.click(
+        fn=return_to_search,
+        inputs=[],
+        outputs=[view_search_list, view_translation_result]
+    )
+    back_to_history_btn.click(
+        fn=return_to_history,
+        inputs=[],
+        outputs=[view_history_list, view_history_result]
+    )
+    
+    # Q&A Logic for Translation View
+    chat_input.submit(
+        fn=do_chat,
+        inputs=[chat_input, chatbot, state_current_paper_id, state_translation_res],
+        outputs=[chat_input, chatbot]
+    )
+    
+    # History Logic
+    demo.load(
+        fn=load_history_dropdown,
+        outputs=[history_dropdown, state_history_data]
+    )
+    refresh_history_btn.click(
+        fn=load_history_dropdown,
+        outputs=[history_dropdown, state_history_data]
+    )
+    
+    load_history_btn.click(
+        fn=do_load_history,
+        inputs=[history_dropdown, state_history_data],
+        outputs=[view_history_list, view_history_result, hist_original_html_out, history_translation_md, history_glossary_html, state_current_paper_id, state_translation_res, history_chatbot, hist_md_copy_box]
+    )
+    
+    history_chat_input.submit(
+        fn=do_chat,
+        inputs=[history_chat_input, history_chatbot, state_current_paper_id, state_translation_res],
+        outputs=[history_chat_input, history_chatbot]
+    )
+
+if __name__ == "__main__":
+    demo.launch(server_name="0.0.0.0", server_port=8501)

@@ -152,7 +152,7 @@ def check_rate_limit(user_id: str, action: str = "translate", limit: int = 5) ->
 
 
 def get_paper(paper_id: str) -> dict:
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_connection()
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM papers WHERE paper_id = ?", (paper_id,))
@@ -164,7 +164,7 @@ def get_paper(paper_id: str) -> dict:
     return None
 
 def get_all_papers(user_id: str = None) -> list:
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_connection()
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     
