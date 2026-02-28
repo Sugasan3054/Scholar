@@ -98,6 +98,81 @@ footer {display: none !important;}
     font-size: 14px;
     line-height: 1.6;
     margin-top: 12px;
+    margin-bottom: 24px;
+}
+.translation-overlay {
+    background: #FFFFFF !important;
+    border-radius: 12px !important;
+    padding: 24px !important;
+    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04) !important;
+    border: 1px solid #E2E8F0 !important;
+    margin-top: 16px !important;
+}
+
+/* Tooltip Styles */
+.tooltip {
+    position: relative;
+    display: inline-block;
+    border-bottom: 2px dotted #2563EB;
+    color: #2563EB;
+    cursor: help;
+    font-weight: 600;
+}
+.tooltip::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: 125%;
+    left: 50%;
+    transform: translateX(-50%);
+    background-color: #1E293B;
+    color: white;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    white-space: normal;
+    width: max-content;
+    max-width: 250px;
+    z-index: 1000;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.2s, visibility 0.2s;
+    line-height: 1.4;
+}
+.tooltip::before {
+    content: '';
+    position: absolute;
+    bottom: 115%;
+    left: 50%;
+    transform: translateX(-50%);
+    border-width: 6px;
+    border-style: solid;
+    border-color: #1E293B transparent transparent transparent;
+    z-index: 1000;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.2s, visibility 0.2s;
+}
+.tooltip:hover::after,
+.tooltip:hover::before {
+    opacity: 1;
+    visibility: visible;
+}
+
+/* Spinner Styles */
+.spinner {
+    border: 4px solid rgba(0, 0, 0, 0.1);
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border-left-color: #2563EB;
+    animation: spin 1s linear infinite;
+    display: inline-block;
+}
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
 }
 
 .original-btn {
@@ -259,6 +334,7 @@ def run_search(query, time_preset, sort_by):
             [], 
             gr.update(visible=True), 
             gr.update(visible=False), 
+            gr.update(visible=False),
             f"<div style='color:#DC2626;'>Search failed: {e}</div>"
         ] + updates
 
@@ -271,6 +347,7 @@ def run_search(query, time_preset, sort_by):
             [], 
             gr.update(visible=True), 
             gr.update(visible=False), 
+            gr.update(visible=False),
             "<div style='color:#475569;'>条件に一致する論文が見つかりませんでした。別のキーワードや期間でお試しください。</div>"
         ] + updates
 
@@ -297,8 +374,27 @@ def run_search(query, time_preset, sort_by):
         results,
         gr.update(visible=True),   # view_search_list
         gr.update(visible=False),  # view_translation_result
+        gr.update(visible=False),  # view_loading
         status_html
     ] + updates
+
+def replace_terms_with_tooltips(text, glossary_data):
+    if not isinstance(glossary_data, list):
+        return text
+    
+    import re
+    for cat in glossary_data:
+        terms = cat.get("terms", [])
+        for t in terms:
+            term = t.get("term", "")
+            exp = t.get("explanation", "")
+            if term and exp:
+                escaped_term = re.escape(term)
+                # Ensure we only replace outside of HTML tags to avoid breaking existing HTML
+                pattern = re.compile(rf'(?<!<[^>]*){escaped_term}(?![^<]*>)', re.IGNORECASE)
+                replacement = f"<span class='tooltip' data-tooltip='{exp}'>{term}</span>"
+                text = pattern.sub(replacement, text)
+    return text
 
 def parse_translation_result(res, paper):
     if isinstance(res, dict) and "tldr" in res:
@@ -306,6 +402,7 @@ def parse_translation_result(res, paper):
         title_en = res.get('title_en', '')
         date_str = paper.get('published_date') or "YYYY/MM/DD"
         source_str = paper.get('source') or "Unknown"
+        glossary = res.get('glossary', [])
         
         tldr_value = res.get('tldr', '')
         if isinstance(tldr_value, list):
@@ -313,15 +410,23 @@ def parse_translation_result(res, paper):
         else:
             tldr_text = str(tldr_value).replace('\n', '<br/><br/>')
             
+        # Apply tooltips
+        title_jp = replace_terms_with_tooltips(title_jp, glossary)
+        tldr_text = replace_terms_with_tooltips(tldr_text, glossary)
+        bg_text = replace_terms_with_tooltips(res.get('background', ''), glossary)
+        method_text = replace_terms_with_tooltips(res.get('method', ''), glossary)
+        result_text = replace_terms_with_tooltips(res.get('result', ''), glossary)
+        disc_text = replace_terms_with_tooltips(res.get('discussion', ''), glossary)
+            
         md = f"<div class='custom-markdown'>"
         md += f"<h2 style='margin-top:0; font-size:20px; color:#0F172A;'>{title_jp}</h2>\n<span style='color:#64748B; font-size:13px;'>Original: {title_en} | {date_str} | {source_str}</span>\n\n"
         md += f"<div class='tldr-box'><h3 style='margin-top:0; margin-bottom: 12px; color:#0F172A; font-size:16px;'>3行要約 (TL;DR)</h3>"
         md += f"<div style='font-size:15px; line-height:1.7; color:#334155;'>{tldr_text}</div></div>\n\n"
         
-        md += f"<h4>研究の背景と目的</h4>\n<p>{res.get('background', '')}</p>\n\n"
-        md += f"<h4>提案手法（メソッド）</h4>\n<p>{res.get('method', '')}</p>\n\n"
-        md += f"<h4>実験と結果</h4>\n<p>{res.get('result', '')}</p>\n\n"
-        md += f"<h4>考察・今後の課題</h4>\n<p>{res.get('discussion', '')}</p>\n\n"
+        md += f"<h4>研究の背景と目的</h4>\n<p>{bg_text}</p>\n\n"
+        md += f"<h4>提案手法（メソッド）</h4>\n<p>{method_text}</p>\n\n"
+        md += f"<h4>実験と結果</h4>\n<p>{result_text}</p>\n\n"
+        md += f"<h4>考察・今後の課題</h4>\n<p>{disc_text}</p>\n\n"
         md += f"</div>"
         
         glossary = res.get('glossary', [])
@@ -363,22 +468,17 @@ def generate_original_pane(paper):
 # Closure generator for mapping button clicks to specific indexes
 def make_loading_fn(idx):
     def loading_fn(results_data):
-        paper = results_data[idx] if idx < len(results_data) else {}
-        original_html = generate_original_pane(paper)
-        loading_html = "<div style='padding:40px 20px; text-align:center;'><h3 style='color:#2563EB; font-size:18px;'>翻訳・要約を生成中...</h3><p style='color:#64748B; margin-top:12px;'>生成AIによる解析を行っています。これには最長で1分ほどかかる場合があります。</p></div>"
         return (
             gr.update(visible=False), # hide search list
-            gr.update(visible=True),  # show translation view
-            original_html,
-            loading_html,
-            gr.update(value=""), None, None, gr.update(value=[]), gr.update(value="")
+            gr.update(visible=True),  # show loading view
+            gr.update(visible=False)  # hide translation view
         )
     return loading_fn
 
 def make_translate_fn(idx):
     def translate_fn(results_data):
         if not results_data or idx >= len(results_data):
-            return "", "<div style='color:#DC2626;'>エラー: 論文データが見つかりません</div>", gr.update(value=""), None, None, gr.update(value=[]), gr.update(value="")
+            return gr.update(visible=False), gr.update(visible=True), "", "<div style='color:#DC2626;'>エラー: 論文データが見つかりません</div>", gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
         
         paper = results_data[idx]
         original_html = generate_original_pane(paper)
@@ -392,7 +492,7 @@ def make_translate_fn(idx):
                 source=paper.get("source") or "",
                 mode="研究用 (詳細な翻訳と考察)"
             )
-            data_dict = translate_paper(req_obj, req=DummyRequest())
+            data_dict = asyncio.run(translate_paper(req_obj, req=DummyRequest()))
             if hasattr(data_dict, "dict"): data_dict = data_dict.dict()
             elif isinstance(data_dict, str): data_dict = json.loads(data_dict)
                 
@@ -413,11 +513,11 @@ def make_translate_fn(idx):
                     
             raw_md = f"# {paper.get('title')}\n\n" + str(res.get('tldr', '')) + "\n\n## 背景\n" + str(res.get('background', '')) + "\n\n## 手法\n" + str(res.get('method', '')) + "\n\n## 結果\n" + str(res.get('result', '')) + "\n\n## 考察\n" + str(res.get('discussion', ''))
                     
-            return original_html, md, glossary_html, paper_id, res, gr.update(value=chat_format), gr.update(value=raw_md)
+            return gr.update(visible=False), gr.update(visible=True), original_html, md, glossary_html, paper_id, res, gr.update(value=chat_format), gr.update(value=raw_md)
         except Exception as e:
             import traceback
             traceback.print_exc()
-            return original_html, f"<div style='color:#DC2626;'>翻訳エラー (Error Info): {e}</div>", gr.update(value=""), None, None, gr.update(value=[]), gr.update(value="")
+            return gr.update(visible=False), gr.update(visible=True), original_html, f"<div style='color:#DC2626;'>翻訳エラー (Error Info): {e}</div>", gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
     return translate_fn
 
 def load_history_dropdown():
@@ -440,7 +540,7 @@ def do_load_history(selected_hist, history_data):
     if not selected_hist or selected_hist == "履歴なし":
         return (
             gr.update(visible=True), gr.update(visible=False),
-            "", "<div style='color:#DC2626;'>履歴が選択されていません</div>", gr.update(value=""), None, None, gr.update(value=[]), gr.update(value="")
+            "", "<div style='color:#DC2626;'>履歴が選択されていません</div>", gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
         )
     pid = selected_hist.split(']')[0][1:]
     
@@ -448,7 +548,7 @@ def do_load_history(selected_hist, history_data):
     if not item:
         return (
             gr.update(visible=True), gr.update(visible=False),
-            "", "<div style='color:#DC2626;'>エラー: データが見つかりません</div>", gr.update(value=""), None, None, gr.update(value=[]), gr.update(value="")
+            "", "<div style='color:#DC2626;'>エラー: データが見つかりません</div>", gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
         )
         
     paper = {
@@ -566,9 +666,19 @@ with gr.Blocks(theme=gr.themes.Base(primary_hue="blue", neutral_hue="slate"), cs
                         card_btn = gr.Button(f"この論文を翻訳・要約する", variant="secondary", size="sm")
                         result_card_blocks.append({"col": card_col, "html": card_html, "btn": card_btn})
 
+            # --- VIEW LOADING ---
+            with gr.Column(visible=False, elem_classes="translation-overlay") as view_loading:
+                gr.HTML("""
+                <div style='padding:100px 20px; text-align:center;'>
+                    <div class='spinner'></div>
+                    <h3 style='color:#2563EB; font-size:22px; margin-top:20px;'>論文を翻訳・要約しています...</h3>
+                    <p style='color:#64748B; margin-top:12px; font-size:15px;'>この処理には約30秒〜1分程度かかります。このままお待ちください。</p>
+                </div>
+                """)
+
             # --- VIEW B: Translation Full Layout (Overlay alternative) ---
-            with gr.Column(visible=False) as view_translation_result:
-                back_to_search_btn = gr.Button("← 検索結果一覧に戻る", size="sm")
+            with gr.Column(visible=False, elem_classes="translation-overlay") as view_translation_result:
+                back_to_search_btn = gr.Button("← 検索結果一覧に戻る", size="sm") 
                 gr.HTML("<hr style='margin: 16px 0 24px 0; border: none; border-top: 1px solid #E2E8F0;'/>")
                 
                 with gr.Row():
@@ -625,7 +735,7 @@ with gr.Blocks(theme=gr.themes.Base(primary_hue="blue", neutral_hue="slate"), cs
     # --- Events ---
     
     # Compile outputs for search: State + Search View + Translated View + Status + (20 * [Col, Html])
-    search_outputs = [state_search_results, view_search_list, view_translation_result, search_status_html]
+    search_outputs = [state_search_results, view_search_list, view_translation_result, view_loading, search_status_html]
     for block in result_card_blocks:
         search_outputs.append(block["col"])
         search_outputs.append(block["html"])
@@ -648,11 +758,11 @@ with gr.Blocks(theme=gr.themes.Base(primary_hue="blue", neutral_hue="slate"), cs
         btn.click(
             fn=make_loading_fn(i),
             inputs=[state_search_results],
-            outputs=[view_search_list, view_translation_result, original_html_out, translation_md, glossary_html_out, state_current_paper_id, state_translation_res, chatbot, md_copy_box]
+            outputs=[view_search_list, view_loading, view_translation_result]
         ).then(
             fn=make_translate_fn(i),
             inputs=[state_search_results],
-            outputs=[original_html_out, translation_md, glossary_html_out, state_current_paper_id, state_translation_res, chatbot, md_copy_box]
+            outputs=[view_loading, view_translation_result, original_html_out, translation_md, glossary_html_out, state_current_paper_id, state_translation_res, chatbot, md_copy_box]
         )
     
     # Navigation Back
